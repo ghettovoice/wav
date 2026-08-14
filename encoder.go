@@ -173,49 +173,73 @@ func (e *Encoder) writeHeader() error {
 	return nil
 }
 
-// Write encodes and writes the passed buffer to the underlying writer.
-// Don't forget to Close() the encoder or the file won't be valid.
-func (e *Encoder) Write(buf *audio.IntBuffer) error {
+func (e *Encoder) writePCMChunkHeader() error {
 	if !e.wroteHeader {
 		if err := e.writeHeader(); err != nil {
 			return err
 		}
 	}
+	if e.pcmChunkStarted {
+		return nil
+	}
 
-	if !e.pcmChunkStarted {
-		// sound header
-		if err := e.AddLE(riff.DataFormatID); err != nil {
-			return fmt.Errorf("error encoding sound header %w", err)
-		}
-		e.pcmChunkStarted = true
+	if err := e.AddLE(riff.DataFormatID); err != nil {
+		return fmt.Errorf("error encoding sound header %w", err)
+	}
+	e.pcmChunkStarted = true
 
-		// write a temporary chunksize
-		e.pcmChunkSizePos = e.WrittenBytes
-		if err := e.AddLE(uint32(4294967295)); err != nil {
-			return fmt.Errorf("%w when writing wav data chunk size header", err)
-		}
+	e.pcmChunkSizePos = e.WrittenBytes
+	if err := e.AddLE(uint32(4294967295)); err != nil {
+		return fmt.Errorf("%w when writing wav data chunk size header", err)
+	}
+
+	return nil
+}
+
+// Write encodes and writes the passed buffer to the underlying writer.
+// Don't forget to Close() the encoder or the file won't be valid.
+func (e *Encoder) Write(buf *audio.IntBuffer) error {
+	if err := e.writePCMChunkHeader(); err != nil {
+		return err
 	}
 
 	return e.addBuffer(buf)
 }
 
+// WriteBytes writes interleaved PCM bytes to the underlying writer.
+// buf must contain a whole number of sample frames.
+func (e *Encoder) WriteBytes(buf []byte) error {
+	blockAlign := e.NumChans * e.BitDepth / 8
+	if blockAlign <= 0 {
+		return fmt.Errorf("invalid block align %d", blockAlign)
+	}
+	if len(buf)%blockAlign != 0 {
+		return fmt.Errorf("PCM data length %d is not a multiple of block align %d", len(buf), blockAlign)
+	}
+	if err := e.writePCMChunkHeader(); err != nil {
+		return err
+	}
+	if len(buf) == 0 {
+		return nil
+	}
+
+	n, err := e.w.Write(buf)
+	e.WrittenBytes += n
+	e.frames += n / blockAlign
+	if err != nil {
+		return err
+	}
+	if n != len(buf) {
+		return io.ErrShortWrite
+	}
+
+	return nil
+}
+
 // WriteFrame writes a single frame of data to the underlying writer.
 func (e *Encoder) WriteFrame(value interface{}) error {
-	if !e.wroteHeader {
-		e.writeHeader()
-	}
-	if !e.pcmChunkStarted {
-		// sound header
-		if err := e.AddLE(riff.DataFormatID); err != nil {
-			return fmt.Errorf("error encoding sound header %w", err)
-		}
-		e.pcmChunkStarted = true
-
-		// write a temporary chunksize
-		e.pcmChunkSizePos = e.WrittenBytes
-		if err := e.AddLE(uint32(4294967295)); err != nil {
-			return fmt.Errorf("%w when writing wav data chunk size header", err)
-		}
+	if err := e.writePCMChunkHeader(); err != nil {
+		return err
 	}
 
 	e.frames++

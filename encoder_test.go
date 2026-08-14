@@ -1,6 +1,9 @@
 package wav
 
 import (
+	"bytes"
+	"encoding/binary"
+	"io/ioutil"
 	"os"
 	"path"
 	"testing"
@@ -154,5 +157,74 @@ func TestEncoderRoundTrip(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestEncoderWriteBytes(t *testing.T) {
+	pcm := []byte{
+		0x01, 0x00, 0x02, 0x00,
+		0x03, 0x00, 0x04, 0x00,
+	}
+
+	file, err := ioutil.TempFile("", "wav-write-bytes-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fileName := file.Name()
+	defer os.Remove(fileName)
+
+	encoder := NewEncoder(file, 8000, 16, 2, 1)
+	for _, chunk := range [][]byte{pcm[:4], pcm[4:]} {
+		if err := encoder.WriteBytes(chunk); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := encoder.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := ioutil.ReadFile(fileName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data) != 44+len(pcm) {
+		t.Fatalf("unexpected file size: got %d, want %d", len(data), 44+len(pcm))
+	}
+	if got := binary.LittleEndian.Uint32(data[4:8]); got != uint32(len(data)-8) {
+		t.Fatalf("unexpected RIFF chunk size: got %d, want %d", got, len(data)-8)
+	}
+	if got := binary.LittleEndian.Uint32(data[40:44]); got != uint32(len(pcm)) {
+		t.Fatalf("unexpected PCM chunk size: got %d, want %d", got, len(pcm))
+	}
+	if !bytes.Equal(data[44:], pcm) {
+		t.Fatalf("PCM data was changed: got %v, want %v", data[44:], pcm)
+	}
+}
+
+func TestEncoderWriteBytesRejectsIncompleteFrame(t *testing.T) {
+	file, err := ioutil.TempFile("", "wav-write-bytes-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fileName := file.Name()
+	defer os.Remove(fileName)
+
+	encoder := NewEncoder(file, 8000, 16, 2, 1)
+	if err := encoder.WriteBytes([]byte{0x01, 0x00, 0x02}); err == nil {
+		t.Fatal("expected incomplete PCM frame to fail")
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := ioutil.ReadFile(fileName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data) != 0 {
+		t.Fatalf("unexpected output after rejected frame: %d bytes", len(data))
 	}
 }
